@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 구 형태 로또 번호 추첨기</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans KR', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a1a;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            text-align: center;
+        }
+        #canvas-container {
+            width: 100%;
+            max-width: 600px;
+            height: 60vh;
+            max-height: 500px;
+            position: relative;
+            border-radius: 1rem;
+            cursor: grab;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            border-radius: 1rem;
+        }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            flex-direction: column;
+            /* *** 수정된 부분: 제목을 상단에만 고정 *** */
+            justify-content: flex-start;
+            padding: 1.5rem;
+            pointer-events: none;
+        }
+        #title-container {
+            background: rgba(0,0,0,0.5);
+            padding: 0.5rem 1rem;
+            border-radius: 0.75rem;
+            backdrop-filter: blur(5px);
+            align-self: center;
+        }
+        /* *** 수정된 부분: 결과창 스타일 업데이트 *** */
+        #result-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 1rem;
+            background: rgba(0,0,0,0.6);
+            border-radius: 1rem;
+            backdrop-filter: blur(5px);
+            flex-wrap: wrap;
+            min-height: 82px; /* 공 1줄 높이 확보 */
+            width: 100%;
+            max-width: 600px;
+            margin-top: 1.5rem;
+            box-sizing: border-box;
+        }
+        .ball-result {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #000;
+            box-shadow: inset -3px -3px 5px rgba(0,0,0,0.3), 2px 2px 5px rgba(255,255,255,0.2);
+            transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.3s ease;
+            transform: scale(0);
+        }
+        .ball-result.show {
+            transform: scale(1);
+        }
+        #button-container {
+            margin-top: 1.5rem;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+        button {
+            pointer-events: all;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            font-weight: bold;
+            color: white;
+            background: linear-gradient(145deg, #007BFF, #00BFFF);
+            border: none;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 10px rgba(0, 0, 0, 0.3);
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+            transform: translateY(0);
+            box-shadow: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="lotto-canvas"></canvas>
+        <div id="ui-container">
+            <div id="title-container">
+                <h1 class="text-2xl font-bold text-cyan-300">3D 로또 번호 추첨기</h1>
+            </div>
+        </div>
+    </div>
+    <!-- *** 수정된 부분: 결과창을 캔버스 밖으로 이동 *** -->
+    <div id="result-container">
+        <!-- 선택된 번호가 여기에 표시됩니다 -->
+    </div>
+    <div id="button-container">
+        <button id="start-btn">추첨 시작</button>
+        <button id="reset-btn" disabled>다시하기</button>
+    </div>
+
+    <script>
+        // --- 전역 변수 및 상수 설정 ---
+        const canvas = document.getElementById('lotto-canvas');
+        const container = document.getElementById('canvas-container');
+        const startBtn = document.getElementById('start-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const resultContainer = document.getElementById('result-container');
+
+        let scene, camera, renderer, world, controls;
+        let balls = [];
+        let selectedBalls = [];
+        let isPicking = false;
+        let isExtracting = false;
+        let extractedBall = null;
+        let pipePath, pipe, exitHoleMesh;
+        let extractionProgress = 0;
+        let animationFrameId;
+
+        const totalBalls = 45;
+        const ballsToPick = 6;
+        const sphereRadius = 7;
+        const ballRadius = 0.5;
+
+        // --- 초기화 함수 ---
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera.position.set(0, sphereRadius, sphereRadius * 2.5);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true;
+            
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.target.set(0, sphereRadius / 2, 0);
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+            directionalLight.position.set(10, 20, 15);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            // Physics World
+            world = new CANNON.World();
+            world.gravity.set(0, -9.82, 0);
+            world.broadphase = new CANNON.NaiveBroadphase();
+            world.solver.iterations = 10;
+
+            // Create objects
+            createSphereContainer();
+            createPipe();
+            createCollector(); // 공 보관함 생성
+            createBalls();
+
+            // Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            startBtn.addEventListener('click', startPicking);
+            resetBtn.addEventListener('click', resetSimulation);
+        }
+        
+        // --- 객체 생성 함수들 ---
+
+        function getBallColor(number) {
+            if (number <= 10) return 0xffd700; // Yellow
+            if (number <= 20) return 0x4169e1; // Blue
+            if (number <= 30) return 0xff4500; // Red
+            if (number <= 40) return 0x808080; // Gray
+            return 0x228b22; // Green
+        }
+
+        function createNumberTexture(number) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = 128;
+            canvas.height = 128;
+            context.fillStyle = 'white';
+            context.fillRect(0, 0, 128, 128);
+            context.font = 'bold 60px Arial';
+            context.fillStyle = 'black';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(number, 64, 64);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function createSphereContainer() {
+            const geometry = new THREE.SphereGeometry(sphereRadius, 64, 64);
+            const material = new THREE.MeshPhongMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.15,
+                side: THREE.DoubleSide
+            });
+            const sphereMesh = new THREE.Mesh(geometry, material);
+            scene.add(sphereMesh);
+        }
+
+        function createPipe() {
+            // 출구 시각적 표시
+            const holeGeo = new THREE.TorusGeometry(ballRadius * 1.5, 0.1, 16, 100);
+            const holeMat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            exitHoleMesh = new THREE.Mesh(holeGeo, holeMat);
+            exitHoleMesh.position.set(0, sphereRadius, 0);
+            exitHoleMesh.rotation.x = Math.PI / 2;
+            scene.add(exitHoleMesh);
+
+            const curve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, sphereRadius, 0), // 시작: 구 상단 출구
+                new THREE.Vector3(0, sphereRadius + 4, -5), // 위로 솟았다가 뒤로
+                new THREE.Vector3(sphereRadius + 4, 0, -6), // 옆으로 넓게 돌며 아래로
+                new THREE.Vector3(0, -sphereRadius, 0), // 구 아래 중앙으로
+                new THREE.Vector3(0, -sphereRadius - 2, 0) // 최종 목적지: 보관함
+            ]);
+            pipePath = curve;
+
+            const tubeGeo = new THREE.TubeGeometry(curve, 64, ballRadius * 1.1, 8, false);
+            const tubeMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide, transparent: true, opacity: 0.3 });
+            pipe = new THREE.Mesh(tubeGeo, tubeMat);
+            scene.add(pipe);
+        }
+
+        function createCollector() {
+            const geo = new THREE.SphereGeometry(3, 32, 16, 0, Math.PI * 2, 0, Math.PI * 0.5);
+            const mat = new THREE.MeshPhongMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.2,
+                side: THREE.DoubleSide
+            });
+            const collectorMesh = new THREE.Mesh(geo, mat);
+            collectorMesh.position.set(0, -sphereRadius - 2, 0);
+            collectorMesh.rotation.x = Math.PI;
+            scene.add(collectorMesh);
+        }
+
+        function createBalls() {
+            const ballMaterial = new CANNON.Material();
+            for (let i = 1; i <= totalBalls; i++) {
+                const ballGeo = new THREE.SphereGeometry(ballRadius, 32, 32);
+                const ballMeshMaterial = new THREE.MeshPhongMaterial({
+                    color: getBallColor(i),
+                    map: createNumberTexture(i)
+                });
+                const ballMesh = new THREE.Mesh(ballGeo, ballMeshMaterial);
+                ballMesh.castShadow = true;
+                ballMesh.receiveShadow = true;
+
+                const ballShape = new CANNON.Sphere(ballRadius);
+                const ballBody = new CANNON.Body({
+                    mass: 1,
+                    material: ballMaterial,
+                    position: new CANNON.Vec3(
+                        (Math.random() - 0.5) * (sphereRadius * 0.5),
+                        ballRadius + Math.random() * sphereRadius * 0.5,
+                        (Math.random() - 0.5) * (sphereRadius * 0.5)
+                    ),
+                    angularDamping: 0.5,
+                    linearDamping: 0.1
+                });
+                ballBody.addShape(ballShape);
+                
+                scene.add(ballMesh);
+                world.addBody(ballBody);
+                balls.push({ mesh: ballMesh, body: ballBody, number: i });
+            }
+        }
+        
+        // --- 애니메이션 및 게임 로직 ---
+
+        function animate() {
+            animationFrameId = requestAnimationFrame(animate);
+            world.step(1 / 60);
+            controls.update();
+
+            balls.forEach(ball => {
+                if (isPicking) {
+                    const ballPos = ball.body.position;
+                    const windAreaRadius = ballRadius * 2;
+                    const isInWindArea = Math.sqrt(ballPos.x * ballPos.x + ballPos.z * ballPos.z) < windAreaRadius && ballPos.y < -sphereRadius / 2;
+
+                    if (isInWindArea) {
+                        const forceMagnitude = 180 + Math.random() * 40; 
+                        const force = new CANNON.Vec3(0, forceMagnitude, 0);
+                        ball.body.applyForce(force, ball.body.position);
+                    }
+                }
+
+                const dist = ball.body.position.length();
+                if (dist > sphereRadius - ballRadius) {
+                    const normal = ball.body.position.clone().unit().negate();
+                    const velocity = ball.body.velocity;
+                    const dot = normal.dot(velocity);
+                    const impulse = normal.scale(2 * dot);
+                    ball.body.velocity.vsub(impulse, ball.body.velocity);
+                    ball.body.position.scale((sphereRadius - ballRadius) / dist, ball.body.position);
+                }
+                
+                ball.mesh.position.copy(ball.body.position);
+                ball.mesh.quaternion.copy(ball.body.quaternion);
+            });
+
+            if (isPicking && !isExtracting && selectedBalls.length < ballsToPick) {
+                checkAndPickBall();
+            }
+            
+            if (isExtracting && extractedBall) {
+                extractionProgress += 0.01;
+                if (extractionProgress > 1) {
+                    finishExtraction();
+                } else {
+                    const pos = pipePath.getPointAt(extractionProgress);
+                    extractedBall.mesh.position.copy(pos);
+                }
+            }
+            
+            exitHoleMesh.material.color.set(isExtracting ? 0xff0000 : 0xffff00);
+
+            renderer.render(scene, camera);
+        }
+
+        function checkAndPickBall() {
+            const exitPosition = new CANNON.Vec3(0, sphereRadius, 0);
+            const catchRadius = ballRadius * 2;
+
+            for (const ball of balls) {
+                const distToExit = ball.body.position.distanceTo(exitPosition);
+                if (distToExit < catchRadius) {
+                    isExtracting = true;
+                    extractedBall = ball;
+                    extractionProgress = 0;
+                    
+                    world.removeBody(ball.body);
+                    balls = balls.filter(b => b.number !== ball.number);
+                    break;
+                }
+            }
+        }
+
+        function finishExtraction() {
+            displayResult(extractedBall);
+            selectedBalls.push(extractedBall);
+            
+            const collectorCenter = new THREE.Vector3(0, -sphereRadius - 2 + ballRadius, 0);
+            const totalWidth = (ballsToPick - 1) * (ballRadius * 2.2);
+            const startX = collectorCenter.x - totalWidth / 2;
+            const x = startX + (selectedBalls.length - 1) * (ballRadius * 2.2);
+            extractedBall.mesh.position.set(x, collectorCenter.y, collectorCenter.z);
+            
+            extractedBall = null;
+            isExtracting = false;
+            
+            if (selectedBalls.length >= ballsToPick) {
+                stopPicking();
+            }
+        }
+
+        function startPicking() {
+            if (isPicking) return;
+            isPicking = true;
+            startBtn.disabled = true;
+            resetBtn.disabled = true;
+            clearResults();
+        }
+
+        function stopPicking() {
+            isPicking = false;
+            resetBtn.disabled = false;
+        }
+
+        function displayResult(ball) {
+            const ballDiv = document.createElement('div');
+            ballDiv.classList.add('ball-result');
+            ballDiv.textContent = ball.number;
+            ballDiv.style.backgroundColor = `#${ball.mesh.material.color.getHexString()}`;
+            resultContainer.appendChild(ballDiv);
+            
+            setTimeout(() => ballDiv.classList.add('show'), 100);
+        }
+
+        function resetSimulation() {
+            stopPicking();
+            cancelAnimationFrame(animationFrameId);
+            
+            [...balls, ...selectedBalls].forEach(ball => {
+                if (ball.mesh) scene.remove(ball.mesh);
+                if (ball.body) world.removeBody(ball.body);
+            });
+            balls = [];
+            selectedBalls = [];
+            
+            clearResults();
+
+            createBalls();
+            animate();
+
+            startBtn.disabled = false;
+            resetBtn.disabled = true;
+        }
+        
+        function clearResults() {
+             resultContainer.innerHTML = '';
+        }
+
+        function onWindowResize() {
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        }
+
+        // --- 실행 ---
+        init();
+        animate();
+    </script>
+</body>
+</html>
